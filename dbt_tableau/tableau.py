@@ -2,133 +2,265 @@ import requests
 import json
 from collections import defaultdict
 from operator import itemgetter
+from typing import List, Dict, Any, Optional
 import xml.sax.saxutils as saxutils
 import logging
 import html
 import xml.etree.ElementTree as ET
 import xml.etree.ElementTree as ET # For parsing XML responses
 from urllib.request import urlopen, Request
+import requests
+import json
+from collections import defaultdict
+from operator import itemgetter
+import logging
 
 TABLEAU_API_VERSION='3.17'
 
-def authenticate_tableau(tableau_server, tableau_site_name, tableau_token_name, tableau_token):
-    url = tableau_server + "/api/" + TABLEAU_API_VERSION + "/auth/signin"
-    print('authenticating with tableau server url: ' + url + '...')
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def authenticate_tableau(tableau_server: str, tableau_site_name: str, tableau_pat_name: str, tableau_pat: str) -> json:
+    """
+    Authenticates with Tableau server and returns authentication object containing a API token
+    as well as the site ID.
+    args:
+        tableau_server: the Tableau sites base URL. 
+        tableau_site_name: The name of the Tableau site (drivybusinessintelligence).
+        tableau_pat_name: The name of the PAT (Personal Access Token) generated in Tableau.
+        tableau_pat: The corresponding token.
+    """
+    url = f"{tableau_server}/api/{TABLEAU_API_VERSION}/auth/signin"
+    logger.info("Authenticating with Tableau server url: %s", url)
     payload = json.dumps({
         "credentials": {
-            "personalAccessTokenName": tableau_token_name,
-            "personalAccessTokenSecret": tableau_token,
+            "personalAccessTokenName": tableau_pat_name,
+            "personalAccessTokenSecret": tableau_pat,
             "site": {
                 "contentUrl": tableau_site_name
             }
         }
     })
     headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
     try:
-        response = requests.request("POST", url, headers=headers, data=payload)
-        response_json = json.loads(response.text)
-        if 'error' in response_json.keys():
-            raise Exception(response_json['error'])
+        response = requests.post(url, headers=headers, data=payload)
+        response_json = response.json()
+        if "errors" in response_json:
+            raise Exception(response_json["errors"][0]["message"])
 
-        tableau_creds = response_json['credentials']
-        print('tableau user id: ' + str(tableau_creds['user']['id']))
+        tableau_creds = response_json["credentials"]
+        logger.info("Tableau user ID: %s", str(tableau_creds["user"]["id"]))
     except Exception as e:
-        print('Error authenticating with tableau. Servername: ' + tableau_server + ' Site: ' + tableau_site_name + ' ' +  str(e))
+        logger.error("Error authenticating with Tableau. Error: %s", e)
+
     return tableau_creds
 
-def tableau_get_databases(tableau_server, tableau_auth, databases = ["PRODUCTION"]):
+def tableau_get_databases(tableau_server: str, tableau_auth: dict, databases: list) -> List[Dict[str, Any]]:
+    """
+    Retrieves the metadata of all the tables within specified databases from the Tableau Catalog 
+    using the Tableau metadata API. 
+    args:
+        databases: list of databases you'd like to return the table name, schema, id, and luid of.
+    """
     db_type = 'connectionType: "snowflake"'
     snowflake_database = f"{db_type}, nameWithin: {json.dumps(databases)}"
-    mdapi_query = '''query get_databases {
-          databases(filter: {%s}) {
+    query = """
+    query get_databases {
+        databases(filter: {%s}) {
             name
             id
             tables {
-              name
-              schema
-              id
-              luid
+                name
+                schema
+                id
+                luid
             }
-          }
-        }''' % snowflake_database
-    auth_headers = {'accept': 'application/json', 'content-type': 'application/json',
-                                   'x-tableau-auth': tableau_auth['token']}
-    try:
-        metadata_query = requests.post(tableau_server + '/api/metadata/graphql', headers=auth_headers, verify=True, json={"query": mdapi_query})
-        tableau_databases = json.loads(metadata_query.text)['data']['databases']
-    except Exception as e:
-        print('Error getting databases from tableau metadata API ' + str(e))
-    print('retrieved tableau databases')
-    return tableau_databases
+        }
+    }
+    """ % snowflake_database
+    headers = {
+        "accept": "application/json", 
+        "content-type": "application/json",
+        "x-tableau-auth": tableau_auth["token"]
+    }
 
-#returns a list of merged (i.e. matched database/schema/table name) tableau database tables and dbt models
-def merge_dbt_tableau_tables(tableau_database,tableau_database_tables,dbt_models):
+    try:
+        response = requests.post(
+            f"{tableau_server}/api/metadata/graphql",
+            headers=headers,
+            json={"query": query},
+            verify=True,
+            timeout=60
+        )
+        response.raise_for_status()
+        response_json = response.json()
+
+        if "data" not in response_json or "databases" not in response_json["data"]:
+            raise KeyError(
+                f"Response missing required data structure for Graph QL query: {query}"
+            )
+        tableau_databases = response_json["data"]["databases"]
+        logger.info("Retrieved %s Tableau databases", str(len(tableau_databases)))
+        return tableau_databases
+    
+    except requests.exceptions.Timeout as e:
+        logger.error("Timeout error connecting to Tableau metadata API: %s", str(e))
+        raise
+    except requests.exceptions.RequestException as e:
+        logging.error("API request failed: %s", str(e))
+        raise
+    except json.JSONDecodeError as e:
+        logging.error("Failed to parse API response: %s", str(e))
+        raise
+    except KeyError as e:
+        logger.error("Invalid response structure: %s", str(e))
+        raise
+    except Exception as e:
+        logger.error("Unexpected error: %s", str(e))
+        raise
+
+def merge_dbt_tableau_tables(
+    tableau_database:list,
+    tableau_database_tables: list,
+    dbt_models: list
+    ) -> list:
+    """
+    Combines the metatdata of dbt models retrieved from the dbt cloud API and the metadata
+    of all the Tableau tables within a specified Tableau Catalog database.
+    
+    args:
+        tableau_database: List of all tables within a Tableau Catalog database retrieved with the 
+        function tableau_get_databases .
+        tableau_database_tables: List of tables in a Tableau Catalog database 
+    
+    Returns: a list of merged (i.e. matched database/schema/table name) 
+        Tableau database tables and dbt models
+    """
     table_model_map = defaultdict(dict)
-    for table in tableau_database_tables['tables']:
+    for table in tableau_database_tables["tables"]:
+        table_database = tableau_database["name"].lower()
+        table_schema = table["schema"].lower()
+        table_name = table["name"].lower()
+        tableau_table_fqn = f"{table_database}.{table_schema}.{table_name}"
         for model in dbt_models:
-            # Aliases make Snowflake
-            if model['name'].lower() == table['name'].lower() and model['schema'].lower() == table['schema'].lower() and model['database'].lower() == tableau_database['name'].lower(): #if table/schema/database/hostname match
-                table_model_map[model['name'].lower()].update(table)
-                table_model_map[table['name'].lower()].update(model)
+            model_database = model["database"].lower()
+            model_schema = model["schema"].lower()
+            model_name = model["name"].lower()
+            dbt_table_fqn = f"{model_database}.{model_schema}.{model_name}"
+            if tableau_table_fqn == dbt_table_fqn:
+                table_model_map[model["name"].lower()].update(table)
+                table_model_map[table["name"].lower()].update(model)
     merged_tables = sorted(table_model_map.values(), key=itemgetter("name"))
-    print('merged ' + str(len(merged_tables)) + ' dbt models and tableau tables in tableau database: ' + tableau_database['name'])
+
+    logger.info(
+        "Merged %s dbt and Tableau tables in Tableau database: %s", 
+        str(len(merged_tables)), tableau_database["name"]
+    )
+
     return merged_tables
 
-#helper function to get full table name in the format [DATABASE].[SCHEMA].[TABLE]
-def get_full_table_name(merged_table):
-    full_table_name = '[' + merged_table['database'].upper() + '].[' + merged_table['schema'].upper() + '].[' + merged_table['name'].upper() + ']'
+def format_table_references_tableau(merged_table: dict) -> str:
+    """
+    Formats fully qualified table relations into the format used
+    by Tableau internally: [DATABASE].[SCHEMA].[TABLE]
+    """
+    database = merged_table["database"].upper()
+    schema = merged_table["schema"].upper()
+    table = merged_table["name"].upper()
+    full_table_name = f"{database}].[{schema}].[{table}]"
+
     return full_table_name
 
 #returns a list of downstream workbooks (filter using database_type_filter and database_name_filter)
-def tableau_get_downstream_workbooks(tableau_server, merged_table, tableau_creds):
-    full_table_name = get_full_table_name(merged_table)
-    print('getting downstream workbooks for table: ' + full_table_name + '...')
-    filter = 'luid: "' + merged_table['luid'] + '"'
+def tableau_get_downstream_workbooks(
+        tableau_server: str,
+        merged_table: dict,
+        tableau_creds: dict
+    ) -> list:
+    """
+    Fetches list of metadata for each Tableau workbook that sits
+    downstream of a specified table.
+    args:
+        merged_table (dict): Dictionary containing metadata from both 
+            dbt and Tableau for a given table within a database in the
+            Tableau catalog.
+    """
+    fqn_tableau = format_table_references_tableau(merged_table)
+    logger.info("Getting downstream workbooks for table: %s", fqn_tableau)
+    table_filter = f'luid: "{merged_table["luid"]}"'
 
-    mdapi_query = '''query get_downstream_workbooks {
-    databaseTables(filter: {%s}) {
-        name
-        id
-        luid
-        downstreamWorkbooks {
-        id
-        luid
-        name
-        description
-        projectName
-        vizportalUrlId
-        tags {
-            id
+    mdapi_query = """
+    query get_downstream_workbooks {
+        databaseTables(filter: {%s}) {
             name
-        }
-        owner {
-            id
-            name
-            username
-        }
-        upstreamTables
-        {
             id
             luid
-            name
-        }
+            downstreamWorkbooks {
+                id
+                luid
+                name
+                description
+                projectName
+                vizportalUrlId
+                tags {
+                    id
+                    name
+                }
+                owner {
+                    id
+                    name
+                    username
+                }
+                upstreamTables
+                {
+                    id
+                    luid
+                    name
+                }
+            }
         }
     }
-    }''' % filter
+    """ % table_filter
 
-    auth_headers = {'accept': 'application/json', 'content-type': 'application/json',
-                                   'x-tableau-auth': tableau_creds['token']}
+    auth_headers = {
+        "accept": "application/json", 
+        "content-type": "application/json",
+        "x-tableau-auth": tableau_creds["token"]
+    }
+
     try:
-        metadata_query = requests.post(tableau_server + '/api/metadata/graphql', headers=auth_headers, verify=True,
-                                       json={"query": mdapi_query})
-        downstream_workbooks = json.loads(metadata_query.text)['data']['databaseTables'][0]['downstreamWorkbooks']
+        response = requests.post(
+            f"{tableau_server}/api/metadata/graphql", 
+            headers=auth_headers, 
+            verify=True,
+            json={"query": mdapi_query},
+            timeout=60
+        )
+        response.raise_for_status()
+        response_json = response.json()
+        downstream_workbooks = response_json["data"]["databaseTables"][0]["downstreamWorkbooks"]
+        logger.info("Retrieved %s downstream Tableau workbooks.", str(len(downstream_workbooks)))
+
+        return downstream_workbooks
+
+    except requests.exceptions.Timeout as e:
+        logger.error("Timeout error connecting to Tableau metadata API: %s", str(e))
+        raise
+    except requests.exceptions.RequestException as e:
+        logging.error("API request failed: %s", str(e))
+        raise
+    except json.JSONDecodeError as e:
+        logging.error("Failed to parse API response: %s", str(e))
+        raise
+    except KeyError as e:
+        logger.error("Invalid response structure: %s", str(e))
+        raise
     except Exception as e:
-        print('Error getting downstream workbooks from tableau metadata API ' + str(e))
-    print('retrieved ' + str(len(downstream_workbooks)) + ' downstream tableau workbooks')
-    return downstream_workbooks
+        logger.error("Unexpected error: %s", str(e))
+        raise
 
 def get_tableau_columns(tableau_server, merged_table, tableau_creds):
     site_id = tableau_creds['site']['id']
@@ -317,12 +449,12 @@ def publish_tableau_column_descriptions(tableau_server, merged_table, tableau_co
     """
     logging.basicConfig(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
-    
+
     # Clean up tableau_server URL
     tableau_server = tableau_server.rstrip('/')
-    
-    full_table_name = get_full_table_name(merged_table)
-    logger.info(f'Publishing Tableau column descriptions for table: {full_table_name}')
+
+    full_table_name = format_table_references_tableau(merged_table)
+    logger.info("Publishing Tableau column descriptions for table: %s", full_table_name)
 
     # Merge column information
     d = defaultdict(dict)
@@ -408,27 +540,89 @@ def publish_tableau_column_descriptions(tableau_server, merged_table, tableau_co
     # Return counts for monitoring
     return success_count, failure_count
 
-# def verify_column_description(tableau_server, site_id, table_id, column_id, token):
-#     """
-#     Verifies that a column description was actually updated in Tableau.
-#     Returns the current description or None if verification fails.
-#     """
-#     try:
-#         url = f"{tableau_server.rstrip('/')}/api/{TABLEAU_API_VERSION}/sites/{site_id}/tables/{table_id}/columns/{column_id}"
-#         headers = {
-#             'X-Tableau-Auth': token,
-#             'Accept': 'application/xml'
-#         }
-#         response = requests.get(url, headers=headers)
-#         response.raise_for_status()
+#publishes tableau column tags for a given table and list of columns
+def publish_tableau_column_tags(tableau_server, tableau_columns, merged_table, tableau_creds):
+    tag = merged_table['packageName']
+    full_table_name = get_full_table_name(merged_table)
+    print('publishing tableau column tags: ' + tag + ' for table: ' + full_table_name + '...')
+    headers = {
+        'X-tableau-Auth': tableau_creds['token'],
+        'Content-Type': 'text/plain'
+    }
+    for tableau_column in tableau_columns:
+        url = tableau_server + "/api/" + TABLEAU_API_VERSION + "/sites/" + tableau_creds['site']['id'] + "/columns/" + tableau_column['id'] + "/tags"
+        payload = "<tsRequest>\n  <tags>\n <tag label=\"" + tag + "\"/>\n  </tags>\n</tsRequest>"
+
+        try:
+            column_tags_response = requests.request("PUT", url, headers=headers, data=payload).text
+            print(column_tags_response)
+        except Exception as e:
+            print('Error publishing tableau column tags ' + str(e))
+    #print('published tableau column tags: ' + tag + ' for table: ' + full_table_name)
+    return column_tags_response
+
+#publishes tableau table description for a given table
+def publish_tableau_table_description(tableau_server: str, merged_table: dict, description_text: str, tableau_creds: dict) -> str:
+   """
+   Updates a table description in Tableau's catalog via REST API.
+
+   Args:
+       tableau_server: Base URL of Tableau server
+       merged_table: Dictionary containing table metadata including LUID 
+       description_text: New description to set
+       tableau_creds: Dictionary with authentication details (site ID and token)
+
+   Returns:
+       Response from Tableau API
+       
+   Raises:
+       Exceptions from failed API requests are logged but not re-raised
+   """
+   logging.basicConfig(level=logging.DEBUG)
+   logger = logging.getLogger(__name__)
+   
+   url = f"{tableau_server.rstrip('/')}/api/{TABLEAU_API_VERSION}/sites/{tableau_creds['site']['id']}/tables/{merged_table['luid']}"
+   
+   payload = f'<tsRequest><table description="{description_text}"></table></tsRequest>'
+   headers = {
+       'X-tableau-Auth': tableau_creds['token'],
+       'Content-Type': 'text/plain'
+   }
+
+   try:
+       response = requests.put(url, headers=headers, data=payload)
+       response.raise_for_status()
+       if response.status_code == 200:
+           logger.info(f"Successfully updated the description for {merged_table['name']}")
+       else:
+           logger.warning(f"Unexpected status code {response.status_code} for table {merged_table['name']}")
+       logger.info(f"Updated description for table {get_full_table_name(merged_table)}")
+       return response.text
+   except Exception as e:
+       logger.error(f"Failed to update table description: {str(e)}")
+       return str(e)
+
+def verify_column_description(tableau_server, site_id, table_id, column_id, token):
+    """
+    Verifies that a column description was actually updated in Tableau.
+    Returns the current description or None if verification fails.
+    """
+    try:
+        url = f"{tableau_server.rstrip('/')}/api/{TABLEAU_API_VERSION}/sites/{site_id}/tables/{table_id}/columns/{column_id}"
+        headers = {
+            'X-Tableau-Auth': token,
+            'Accept': 'application/xml'
+        }
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
         
-#         # Parse response XML to get description
-#         # You'll need to implement XML parsing based on the response format
-#         # Return the description if found
-#         return response.text
-#     except Exception as e:
-#         logging.error(f"Error verifying column description: {str(e)}")
-#         return None
+        # Parse response XML to get description
+        # You'll need to implement XML parsing based on the response format
+        # Return the description if found
+        print(response.text)
+    except Exception as e:
+        logging.error(f"Error verifying column description: {str(e)}")
+        return None
 
 # def publish_tableau_column_descriptions(tableau_server, merged_table, tableau_columns, tableau_creds):
 #     full_table_name = get_full_table_name(merged_table)
