@@ -148,7 +148,12 @@ def dbt_get_models_for_job(dbt_metadata_api: str, dbt_token: str, job_id: int) -
         "variables": {}
     }
     try:
-        response = requests.post(dbt_metadata_api, headers=headers, json=payload)
+        response = requests.post(
+            dbt_metadata_api, 
+            headers=headers, 
+            json=payload,
+            timeout=60
+        )
         response_json = response.json()
 
         if "errors" in response_json:
@@ -161,23 +166,6 @@ def dbt_get_models_for_job(dbt_metadata_api: str, dbt_token: str, job_id: int) -
 
     except Exception as e:
         logger.error("Error getting dbt models for job id: %s - %s", job_id, str(e))
-
-def parse_fully_qualified_relation_name(models_api_response, model_names: list):
-    # Iterate through models in JSON list returned by discovery API
-    fully_qualified_relation_names = []
-    model_full_relation_map = dict()
-    for model in models_api_response:
-        if model.get("uniqueId").split(".")[2] in model_names:
-            relation = f'{model["database"].upper()}.{model["schema"].upper()}.{model["name"].upper()}'
-            fully_qualified_relation_names.append(relation)
-    if len(fully_qualified_relation_names) > 0:
-        for model in model_names:
-            model_full_relation_map[model] = next(
-                (rel for rel in fully_qualified_relation_names if model.upper() in rel.split('.')),
-                None
-            )
-            return model_full_relation_map
-    return fully_qualified_relation_names
 
 def generate_dbt_exposures(
     downstream_workbooks: List[List[Dict[str, Any]]], 
