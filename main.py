@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 
 from dbt_tableau.dbt_metadata_api import (
     dbt_get_account_id, dbt_get_projects, dbt_get_jobs, dbt_get_models_for_job,
@@ -11,7 +12,9 @@ from dbt_tableau.tableau import (
     tableau_get_downstream_workbooks, 
     merge_dbt_tableau_tables,
     get_tableau_columns,
-    publish_tableau_column_descriptions
+    publish_tableau_column_descriptions,
+    verify_column_description,
+    publish_tableau_table_description
 )
 from dotenv import load_dotenv
 
@@ -29,6 +32,9 @@ TABLEAU_PAT = os.getenv("TABLEAU_PAT")
 TABLEAU_AUTH = authenticate_tableau(TABLEAU_SERVER, TABLEAU_SITE, TABLEAU_PAT_NAME, TABLEAU_PAT)
 
 def restore_full_model_name(tableau_database_tables):
+    """
+    Adds aliases back to FQN tables found in a Tableau catalog database.
+    """
     for table in tableau_database_tables['tables']:
         if table['schema'].lower() == 'common':
             table['name'] = f"common_{table['name']}"
@@ -38,21 +44,29 @@ def restore_full_model_name(tableau_database_tables):
 
 if __name__ == "__main__":
     dbt_projects = dbt_get_projects(ACCOUNT_ID,API_BASE_URL,DBT_API_KEY)
+    # Need to specify dbt cloud PROD environment
     jobs = dbt_get_jobs(ACCOUNT_ID,API_BASE_URL,DBT_API_KEY, job_environment_ids=[1939])
     ### Returns metadata on all models
+    ### document third arg - what dbt job is it corresponding to
     models = dbt_get_models_for_job(METADATA_API_URL, DBT_API_KEY, 117857)
     reporting_models_metadata = []
-    # for model in models:
-    #     if "reporting" in model.get("schema"):
-    #         print(f"Model: {model.get('name')}, dbt discovery API metadata: {model}")
-    
+
     # Three production databases in tableau
-    tableau_databases = tableau_get_databases(TABLEAU_SERVER, TABLEAU_AUTH)
+    tableau_databases = tableau_get_databases(TABLEAU_SERVER, TABLEAU_AUTH, ["PRODUCTION"])
     tableau_database_tables = restore_full_model_name(tableau_databases[1])
     merged_tables = merge_dbt_tableau_tables(tableau_databases[1], tableau_database_tables, models)
-    common_search_cols = get_tableau_columns(TABLEAU_SERVER, merged_tables[48], TABLEAU_AUTH)
-    publish_tableau_column_descriptions(TABLEAU_SERVER, merged_tables[48], common_search_cols, TABLEAU_AUTH)
-    # for i,model in enumerate(merged_tables):
+    for table in merged_tables:
+        table_cols = get_tableau_columns(TABLEAU_SERVER, table, TABLEAU_AUTH)
+        publish_tableau_column_descriptions(TABLEAU_SERVER, table, table_cols, TABLEAU_AUTH)
+        publish_tableau_table_description(TABLEAU_SERVER, table, table['description'], TABLEAU_AUTH)
+
+    # publish_tableau_table_description(TABLEAU_SERVER, merged_tables[10], merged_tables[10]['description'], TABLEAU_AUTH)
+    #risk_rentals_cols = get_tableau_columns(TABLEAU_SERVER, merged_tables[43], TABLEAU_AUTH)
+    # for col in risk_rentals_cols:
+    #     print(f"{col['name']} description: {col['luid']}")
+    #publish_tableau_column_tags(TABLEAU_SERVER, common_cars_cols, merged_tables[10], TABLEAU_AUTH)
+    # verify_column_description(TABLEAU_SERVER, '32ed54d3-34c0-4621-b167-1bcdd2c29933', 'd236ae4d-a106-4278-9960-c591f0d26d6e', 'e21ee743-73d6-461d-9aa8-0b9c1a416e6b', TABLEAU_AUTH['token'])
+    # # for i,model in enumerate(merged_tables):
     #     print(f"Model {model.get('name')}, index: {i},")
     # all_downstream_workbooks = []
     # for table in merged_tables:

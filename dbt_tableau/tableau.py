@@ -262,16 +262,19 @@ def tableau_get_downstream_workbooks(
         logger.error("Unexpected error: %s", str(e))
         raise
 
-def get_tableau_columns(tableau_server, merged_table, tableau_creds):
-    site_id = tableau_creds['site']['id']
+def get_tableau_columns(tableau_server: str, merged_table: dict, tableau_creds: dict) -> list:
+    """
+    Retrieves all columns for a table within the Tableau catalog.
+    """
+
     headers = {
-        'X-tableau-Auth': tableau_creds['token'],
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        "X-tableau-Auth": tableau_creds["token"],
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
-    
-    # GraphQL query for columns
-    mdapi_query = '''
+    # JSON object to pass luid of a column to the graphQL
+    variables = {"luid": merged_table["luid"]}
+    mdapi_query = """
     query getColumns($luid: String!) {
         databaseTables(filter: {luid: $luid}) {
             columns {
@@ -284,206 +287,108 @@ def get_tableau_columns(tableau_server, merged_table, tableau_creds):
             }
         }
     }
-    '''
-    
-    variables = {
-        "luid": merged_table['luid']
-    }
-    
+    """
+
     try:
         response = requests.post(
             f"{tableau_server}/api/metadata/graphql",
             headers=headers,
-            json={"query": mdapi_query, "variables": variables}
+            json={"query": mdapi_query, "variables": variables},
+            timeout=60
         )
         response.raise_for_status()
-        
-        data = response.json()
-        columns = data['data']['databaseTables'][0]['columns']
-        print(f'Retrieved {len(columns)} columns for table {merged_table["name"]}')
+        response_json = response.json()
+        columns = response_json["data"]["databaseTables"][0]["columns"]
+        logger.info("Retrieved %s columns for table %s", str(len(columns)), merged_table["name"])
+
         return columns
-        
+
+    except requests.exceptions.Timeout as e:
+        logger.error("Timeout error connecting to Tableau metadata API: %s", str(e))
+        raise
+    except requests.exceptions.RequestException as e:
+        logging.error("API request failed: %s", str(e))
+        raise
+    except json.JSONDecodeError as e:
+        logging.error("Failed to parse API response: %s", str(e))
+        raise
+    except KeyError as e:
+        logger.error("Invalid response structure: %s", str(e))
+        raise
     except Exception as e:
-        print(f'Error getting columns from tableau metadata API: {str(e)}')
-        return []
+        logger.error("Unexpected error: %s", str(e))
+        raise
 
-# def get_tableau_columns(tableau_server, merged_table, tableau_creds):
-#     full_table_name = get_full_table_name(merged_table)
-#     print('getting columns for tableau table ' + full_table_name + '...')
-#     site_id=tableau_creds['site']['id']
-#     payload = ""
-#     headers = {
-#         'X-tableau-Auth': tableau_creds['token'],
-#         'Content-Type': 'appication/json',
-#         'Accept': 'application/json'
-#     }
-#     page_size = 100
-#     page_number = 1  # 1-based, not zero based
-#     total_returned = 0
-#     done = False
-#     tableau_columns_list = []
-    
-#     request_url = f"{tableau_server}/api/{TABLEAU_API_VERSION}/sites/{site_id}/tables/{merged_table['luid']}/columns"
-#     paging_parameters = f'?pageSize={page_size}&pageNumber={page_number}'
-#     full_url = request_url + paging_parameters
-#     print(full_url)
-#     try:
-#         req = Request(full_url, headers=headers)
-#         req = urlopen(req)
-#         server_response = req.read().decode("utf8")
-#         tableau_columns = json.loads(server_response)['columns']['column']
-#         response_data = json.loads(server_response)
-#         pagination = response_data['columns'].get('pagination', {})
-#         print(pagination)
-#     except Exception as e:
-#         print('Error getting columns from tableau metadata API ' + str(e))
-#     print('retrieved ' + str(len(tableau_columns)) + ' columns for tableau table: ' + full_table_name)
-#     return tableau_columns
-
-# def get_tableau_columns(tableau_server, merged_table, tableau_creds):
-#     """Gets all columns from Tableau table using GraphQL API"""
-#     full_table_name = get_full_table_name(merged_table)
-#     print(f'Getting columns for tableau table {full_table_name}...')
-    
-#     site_id = tableau_creds['site']['id']
-    
-#     # Try different possible GraphQL endpoints
-#     graphql_endpoints = [
-#         f"{tableau_server}api/metadata/graphql",  # New metadata API endpoint
-#         f"{tableau_server}api/{TABLEAU_API_VERSION}/metadata/graphql",  # Version-specific metadata endpoint
-#         f"{tableau_server}metadata/graphql",  # Direct metadata endpoint
-#         f"https://us-east-1.online.tableau.com/metadata/graphql"  # Hardcoded Tableau Online endpoint
-#     ]
-    
-#     headers = {
-#         'X-Tableau-Auth': tableau_creds['token'],
-#         'Content-Type': 'application/json',
-#         'Accept': 'application/json'
-#     }
-    
-#     # GraphQL query for table columns
-#     query = """
-#     query getTableColumns($tableId: String!) {
-#       tables(filter: { id: $tableId }) {
-#         nodes {
-#           name
-#           id
-#           columns {
-#             totalCount
-#             nodes {
-#               name
-#               id
-#               description
-#               dataType
-#               upstreamColumns {
-#                 totalCount
-#               }
-#             }
-#           }
-#         }
-#       }
-#     }
-#     """
-    
-#     variables = {
-#         "tableId": merged_table['luid']
-#     }
-    
-#     payload = {
-#         "query": query,
-#         "variables": variables
-#     }
-    
-#     for endpoint in graphql_endpoints:
-#         try:
-#             print(f"\nTrying endpoint: {endpoint}")
-#             print("GraphQL query:", json.dumps(payload, indent=2))
-            
-#             response = requests.post(endpoint, headers=headers, json=payload)
-#             print(f"Status code: {response.status_code}")
-            
-#             if response.status_code == 200:
-#                 data = response.json()
-#                 print("\nDEBUG: Response structure:")
-#                 print(json.dumps(data, indent=2))
-                
-#                 if 'data' in data and 'tables' in data['data']:
-#                     tables = data['data']['tables']['nodes']
-#                     if tables:
-#                         table = tables[0]
-#                         columns = table['columns']['nodes']
-#                         total_count = table['columns']['totalCount']
-                        
-#                         print(f"\nFound {total_count} total columns")
-#                         print(f"Retrieved {len(columns)} columns")
-                        
-#                         # Show sample of column names
-#                         print("\nSample column names:")
-#                         for col in columns[:5]:
-#                             print(f"- {col['name']} (ID: {col['id']})")
-                        
-#                         return columns
-#                     else:
-#                         print("No table found with the provided LUID")
-#                 else:
-#                     print("Unexpected response structure")
-#                     continue
-#             else:
-#                 print(f"Error response for endpoint {endpoint}:")
-#                 print(response.text)
-#                 continue
-                
-#         except Exception as e:
-#             print(f"Error with endpoint {endpoint}: {str(e)}")
-#             if hasattr(e, 'response'):
-#                 print(f"Response: {e.response.text}")
-#             continue
-    
-#     print("\nFailed to get columns from any endpoint")
-#     return []
-
-
-def publish_tableau_column_descriptions(tableau_server, merged_table, tableau_columns, tableau_creds):
+def publish_tableau_column_descriptions(
+    tableau_server: str,
+    merged_table: dict,
+    tableau_columns: dict,
+    tableau_creds: dict
+    ) -> int:
     """
     Publishes column descriptions to Tableau catalog using the REST API.
     """
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-
-    # Clean up tableau_server URL
-    tableau_server = tableau_server.rstrip('/')
 
     full_table_name = format_table_references_tableau(merged_table)
+    site_id = tableau_creds["site"]["id"]
     logger.info("Publishing Tableau column descriptions for table: %s", full_table_name)
 
-    # Merge column information
-    d = defaultdict(dict)
-    for l in (tableau_columns, merged_table['columns']):
+    # Merge column information so that descriptions and 
+    # Tableua metadata (luid, id) are available in one dict
+    tableau_dbt_column_map = defaultdict(dict)
+    # Iterates through lists sequentially. First list of Tableau columns 
+    # and their metadata, then dbt columns.
+    for l in (tableau_columns, merged_table["columns"]):
         for elem in l:
+            # For each column in both list respectively, update the defaultdict to
+            # contain the metadata as its values. The first pass does this for
+            # Tableau columns, the second adds the metadata for dbt to each value in the dict
             if isinstance(elem, dict):
-                d[elem.get('name', '')].update(elem)
-    
-    merged_columns = sorted(d.values(), key=itemgetter("name"))
+                # First pass in the loop: {
+                    # "TABLE_NAME:", {"NAME": "TABLE_NAME", "luid": "123"}, ...
+                # }
+                # Second pass in the loop: {
+                    # "TABLE_NAME:", {
+                        # "NAME": "TABLE_NAME", "luid": "123",
+                        # "description": "dbt documentation"
+                    # },
+                # }
+                tableau_dbt_column_map[elem.get("name", "").upper()].update(elem)
+    # Sorts values by alphabetical order of table name
+    merged_columns = sorted(tableau_dbt_column_map.values(), key=itemgetter("name"))
     success_count = 0
     failure_count = 0
-    
+
     for column in merged_columns:
         try:
-            required_fields = ['description', 'luid', 'name']
+            # Create list of metadata fields that are required to update a column description
+            required_fields = ["description", "luid", "name"]
             if not all(field in column and column[field] is not None for field in required_fields):
-                logger.warning(f"Skipping column {column.get('name', 'Unknown')}: Missing required fields")
+                logger.warning(
+                    "Skipping column %s: Missing required fields", column.get('name', 'Unknown')
+                )
+                # Skip column if it doesn't have a description to publish
                 continue
 
             # Clean and encode description
-            description = column['description']
+            description = column["description"]
             # Replace smart quotes and other problematic characters
-            description = description.replace('"', '"').replace('"', '"').replace(''', "'").replace(''', "'")
+            quote_map = {
+                '\u201c': '"',  # opening curly quote
+                '\u201d': '"',  # closing curly quote
+                '\u2018': "'",  # opening curly apostrophe
+                '\u2019': "'"   # closing curly apostrophe
+            }
+            description = description.translate(str.maketrans(quote_map))
             # Escape for XML
             description = html.escape(description, quote=True)
-            
+
             # Construct URL ensuring no double slashes
-            url = f"{tableau_server}/api/{TABLEAU_API_VERSION}/sites/{tableau_creds['site']['id']}/tables/{merged_table['luid']}/columns/{column['luid']}"
-            
+            url = (
+                f"{tableau_server}/api/{TABLEAU_API_VERSION}/sites/{site_id}"
+                f"/tables/{merged_table['luid']}/columns/{column['luid']}"
+            )
+
             # Construct payload with proper XML formatting
             payload = f"""<?xml version="1.0" encoding="UTF-8"?>
             <tsRequest>
@@ -491,225 +396,147 @@ def publish_tableau_column_descriptions(tableau_server, merged_table, tableau_co
             </tsRequest>"""
 
             headers = {
-                'X-Tableau-Auth': tableau_creds['token'],
-                'Content-Type': 'application/xml',
-                'Accept': 'application/xml'
+                "X-Tableau-Auth": tableau_creds["token"],
+                "Content-Type": "application/xml",
+                "Accept": "application/xml"
             }
 
-            logger.debug(f"Making request to URL: {url}")
-            logger.debug(f"Payload: {payload}")
-            logger.debug(f"Headers: {headers}")
-            
+            logger.debug("Making request to URL: %s", url)
+            logger.debug("Payload: %s", payload)
+            logger.debug("Headers: %s", headers)
+
             # Make request with explicit encoding
             response = requests.put(
-                url, 
+                url,
                 headers=headers, 
                 data=payload.encode('utf-8'),
-                verify=True  # Enable SSL verification
+                verify=True,  # Enable SSL verification
+                timeout=60
             )
-            
+
             # Log the full response
-            logger.debug(f"Response status: {response.status_code}")
-            logger.debug(f"Response headers: {response.headers}")
-            logger.debug(f"Response text: {response.text}")
-            
+            logger.debug("Response status: %s", response.status_code)
+            logger.debug("Response headers: %s", response.headers)
+            logger.debug("Response text: %s", response.text)
+
             response.raise_for_status()
-            
+
             # Verify the response indicates success
             if response.status_code == 200:
-                logger.info(f"Successfully updated column {column['name']}")
+                logger.info("Successfully updated column %s", column["name"])
                 success_count += 1
             else:
-                logger.warning(f"Unexpected status code {response.status_code} for column {column['name']}")
+                logger.warning(
+                    "Unexpected status code %s for column %s", response.status_code, column["name"]
+                )
                 failure_count += 1
-                
+
         except requests.exceptions.RequestException as e:
             failure_count += 1
-            logger.error(f"Error updating column {column.get('name', 'Unknown')}: {str(e)}")
-            if hasattr(e.response, 'text'):
-                logger.error(f"Response text: {e.response.text}")
-                
-        except Exception as e:
-            failure_count += 1
-            logger.error(f"Unexpected error updating column {column.get('name', 'Unknown')}: {str(e)}")
-            
+            logger.error("Error updating column %s: %s", column.get("name", "Unknown"), str(e))
+
     # Log final results
-    logger.info(f"Completed publishing descriptions for {full_table_name}")
-    logger.info(f"Success: {success_count}, Failures: {failure_count}")
-    
+    logger.info("Completed publishing descriptions for %s", full_table_name)
+    logger.info("Success: %s, Failures: %s", success_count, failure_count)
+
     # Return counts for monitoring
     return success_count, failure_count
 
-#publishes tableau column tags for a given table and list of columns
-def publish_tableau_column_tags(tableau_server, tableau_columns, merged_table, tableau_creds):
-    tag = merged_table['packageName']
-    full_table_name = get_full_table_name(merged_table)
-    print('publishing tableau column tags: ' + tag + ' for table: ' + full_table_name + '...')
+def publish_tableau_table_description(
+    tableau_server: str,
+    merged_table: dict,
+    description_text: str,
+    tableau_creds: dict
+) -> str:
+    """
+    Updates a table description in Tableau's catalog via REST API with dbt documentatin description.
+    Args:
+        description_text: dbt docs description to update in Tableau   
+    """
+    url = (
+        f"{tableau_server}/api/{TABLEAU_API_VERSION}/sites/"
+        f"{tableau_creds['site']['id']}/tables/{merged_table['luid']}"
+    )
+
+    payload = f'<tsRequest><table description="{description_text}"></table></tsRequest>'
     headers = {
-        'X-tableau-Auth': tableau_creds['token'],
-        'Content-Type': 'text/plain'
+        "X-tableau-Auth": tableau_creds["token"],
+        "Content-Type": "text/plain"
     }
-    for tableau_column in tableau_columns:
-        url = tableau_server + "/api/" + TABLEAU_API_VERSION + "/sites/" + tableau_creds['site']['id'] + "/columns/" + tableau_column['id'] + "/tags"
-        payload = "<tsRequest>\n  <tags>\n <tag label=\"" + tag + "\"/>\n  </tags>\n</tsRequest>"
 
-        try:
-            column_tags_response = requests.request("PUT", url, headers=headers, data=payload).text
-            print(column_tags_response)
-        except Exception as e:
-            print('Error publishing tableau column tags ' + str(e))
-    #print('published tableau column tags: ' + tag + ' for table: ' + full_table_name)
-    return column_tags_response
+    try:
+        response = requests.put(
+            url,
+            headers=headers,
+            data=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+        if response.status_code == 200:
+            logger.info("Successfully updated the description for %s", merged_table["name"])
+        else:
+            logger.warning(
+                "Unexpected status code %s for table %s", response.status_code, merged_table["name"]
+            )
+        logger.info(
+            "Updated description for table %s", format_table_references_tableau(merged_table)
+        )
 
-#publishes tableau table description for a given table
-def publish_tableau_table_description(tableau_server: str, merged_table: dict, description_text: str, tableau_creds: dict) -> str:
-   """
-   Updates a table description in Tableau's catalog via REST API.
+        return response.text
 
-   Args:
-       tableau_server: Base URL of Tableau server
-       merged_table: Dictionary containing table metadata including LUID 
-       description_text: New description to set
-       tableau_creds: Dictionary with authentication details (site ID and token)
+    except requests.exceptions.RequestException as e:
+        logger.error("Failed to update table description: %s", str(e))
 
-   Returns:
-       Response from Tableau API
-       
-   Raises:
-       Exceptions from failed API requests are logged but not re-raised
-   """
-   logging.basicConfig(level=logging.DEBUG)
-   logger = logging.getLogger(__name__)
-   
-   url = f"{tableau_server.rstrip('/')}/api/{TABLEAU_API_VERSION}/sites/{tableau_creds['site']['id']}/tables/{merged_table['luid']}"
-   
-   payload = f'<tsRequest><table description="{description_text}"></table></tsRequest>'
-   headers = {
-       'X-tableau-Auth': tableau_creds['token'],
-       'Content-Type': 'text/plain'
-   }
 
-   try:
-       response = requests.put(url, headers=headers, data=payload)
-       response.raise_for_status()
-       if response.status_code == 200:
-           logger.info(f"Successfully updated the description for {merged_table['name']}")
-       else:
-           logger.warning(f"Unexpected status code {response.status_code} for table {merged_table['name']}")
-       logger.info(f"Updated description for table {get_full_table_name(merged_table)}")
-       return response.text
-   except Exception as e:
-       logger.error(f"Failed to update table description: {str(e)}")
-       return str(e)
-
-def verify_column_description(tableau_server, site_id, table_id, column_id, token):
+def verify_column_description(
+        tableau_server: str,
+        site_id: str,
+        table_id: str,
+        column_id: str,
+        token: str
+    ):
     """
     Verifies that a column description was actually updated in Tableau.
     Returns the current description or None if verification fails.
     """
     try:
-        url = f"{tableau_server.rstrip('/')}/api/{TABLEAU_API_VERSION}/sites/{site_id}/tables/{table_id}/columns/{column_id}"
+        url = (
+            f"{tableau_server}/api/{TABLEAU_API_VERSION}/sites/"
+            f"{site_id}/tables/{table_id}/columns/{column_id}"
+        )
+
         headers = {
-            'X-Tableau-Auth': token,
-            'Accept': 'application/xml'
+            "X-Tableau-Auth": token,
+            "Accept": "application/xml"
         }
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=60)
         response.raise_for_status()
-        
+
         # Parse response XML to get description
         # You'll need to implement XML parsing based on the response format
         # Return the description if found
         print(response.text)
     except Exception as e:
-        logging.error(f"Error verifying column description: {str(e)}")
+        logging.error("Error verifying column description: %s", str(e))
         return None
 
-# def publish_tableau_column_descriptions(tableau_server, merged_table, tableau_columns, tableau_creds):
+#publishes tableau column tags for a given table and list of columns
+# def publish_tableau_column_tags(tableau_server, tableau_columns, merged_table, tableau_creds):
+#     tag = merged_table['packageName']
 #     full_table_name = get_full_table_name(merged_table)
-#     site_id = tableau_creds['site']['id']
-    
-#     print(f'Publishing Tableau column descriptions for table: {full_table_name}...')
-    
-#     # Create mapping of column names to descriptions from merged_table
-#     dbt_descriptions = {}
-#     print("\nDEBUG: Building column descriptions...")
-#     for col in merged_table['columns']:
-#         name = col['name'].upper()
-#         description = col.get('description')
-#         if description is not None and description.strip() != '':
-#             dbt_descriptions[name] = description
-    
-#     updated_count = 0
-#     skipped_count = 0
-    
-#     for column in tableau_columns:
-#         column_name = column['name'].upper()
-        
-#         description = dbt_descriptions.get(column_name)
-#         if not description:
-#             print(f"Skipping column {column_name}: No description found")
-#             skipped_count += 1
-#             continue
-            
-#         # Clean up the description
-#         description = description.strip().strip('"')
-        
-#         # Clean and escape the description for XML
-#         description = (description
-#             .replace('&', '&amp;')  # Must be first
-#             .replace('"', '&quot;')
-#             .replace("'", '&apos;')
-#             .replace(''', '&apos;')  # Handle smart quotes
-#             .replace(''', '&apos;')  # Handle other smart quotes
-#             .replace('"', '&quot;')  # Handle smart double quotes
-#             .replace('"', '&quot;')  # Handle other smart double quotes
-#             .replace("<", '&lt;')
-#             .replace(">", '&gt;')
-#             .replace("\n", " ")
-#         )
-        
-#         url = f"{tableau_server}api/{TABLEAU_API_VERSION}/sites/{site_id}/tables/{merged_table['luid']}/columns/{column['id']}"
-#         print(url)
-#         # Create XML payload with explicit UTF-8 encoding
-#         payload = f"""<?xml version="1.0" encoding="UTF-8"?>
-#         <tsRequest>
-#         <column description="{description}"/>
-#         </tsRequest>"""
-        
-#         headers = {
-#             'X-Tableau-Auth': tableau_creds['token'],
-#             'Content-Type': 'application/xml; charset=utf-8'  # Specify UTF-8 encoding
-#         }
-        
-#         try:
-#             print(f"\nProcessing column: {column_name}")
-#             print(f"Raw description: {description}")
-            
-#             # Encode payload as UTF-8 bytes
-#             payload_bytes = payload.encode('utf-8')
-            
-#             response = requests.put(url, headers=headers, data=payload_bytes)
-#             print(f"Status Code: {response.status_code}")
-            
-#             if response.status_code == 200:
-#                 print(f"Successfully updated description for column: {column_name}")
-#                 updated_count += 1
-#             else:
-#                 print(f"Failed to update description for column: {column_name}")
-#                 print(f"Error: Status code {response.status_code}")
-#                 print(f"Response: {response.text}")
-#                 skipped_count += 1
-                
-#         except Exception as e:
-#             print(f"Error publishing description for column {column_name}: {str(e)}")
-#             if hasattr(e, 'response'):
-#                 print(f"Response: {e.response.text}")
-#             skipped_count += 1
-    
-#     print(f'\nSummary:')
-#     print(f'Total columns: {len(tableau_columns)}')
-#     print(f'Successfully updated: {updated_count}')
-#     print(f'Skipped/Failed: {skipped_count}')
-#     print(f'Finished processing column descriptions for table {full_table_name}')
-#     return
+#     print('publishing tableau column tags: ' + tag + ' for table: ' + full_table_name + '...')
+#     headers = {
+#         'X-tableau-Auth': tableau_creds['token'],
+#         'Content-Type': 'text/plain'
+#     }
+#     for tableau_column in tableau_columns:
+#         url = tableau_server + "/api/" + TABLEAU_API_VERSION + "/sites/" + tableau_creds['site']['id'] + "/columns/" + tableau_column['id'] + "/tags"
+#         payload = "<tsRequest>\n  <tags>\n <tag label=\"" + tag + "\"/>\n  </tags>\n</tsRequest>"
 
+#         try:
+#             column_tags_response = requests.request("PUT", url, headers=headers, data=payload).text
+#             print(column_tags_response)
+#         except Exception as e:
+#             print('Error publishing tableau column tags ' + str(e))
+#     #print('published tableau column tags: ' + tag + ' for table: ' + full_table_name)
+#     return column_tags_response
