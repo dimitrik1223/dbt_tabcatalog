@@ -58,6 +58,18 @@ def authenticate_tableau(tableau_server: str, tableau_site_name: str, tableau_pa
 
     return tableau_creds
 
+def restore_full_model_name(tableau_database_tables):
+    """
+    Adds aliases back to FQN tables found in a Tableau catalog database.
+    """
+    for table in tableau_database_tables['tables']:
+        if table["schema"].lower() == "common":
+            table["name"] = f"common_{table['name']}"
+        elif table["schema"].lower() == 'core_ng':
+            table["name"] = f"core_{table['name']}"
+
+    return tableau_database_tables
+
 def tableau_get_databases(tableau_server: str, tableau_auth: dict, databases: list) -> List[Dict[str, Any]]:
     """
     Retrieves the metadata of all the tables within specified databases from the Tableau Catalog 
