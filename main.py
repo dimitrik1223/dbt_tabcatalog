@@ -1,20 +1,7 @@
 import os
 
-from dbt_tableau.dbt_metadata_api import (
-    dbt_get_account_id, dbt_get_projects, dbt_get_jobs, dbt_get_models_for_job,
-    # generate_dbt_exposures
-)
-from dbt_tableau.tableau import (
-    authenticate_tableau, 
-    tableau_get_databases, 
-    # tableau_get_downstream_workbooks, 
-    merge_dbt_tableau_tables,
-    get_tableau_columns,
-    publish_tableau_column_descriptions,
-    # verify_column_description,
-    publish_tableau_table_description,
-    restore_full_model_name
-)
+from dbt_tableau.dbt_metadata_api import dbtClient
+from dbt_tableau.tableau import tableauClient
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,30 +9,58 @@ load_dotenv()
 API_BASE_URL = os.getenv("API_BASE_URL")
 METADATA_API_URL = os.getenv("METADATA_API_URL")
 DBT_API_KEY = os.getenv("DBT_API_PAT")
-ACCOUNT_ID = dbt_get_account_id(API_BASE_URL,DBT_API_KEY)
 #### Tableau ###
-TABLEAU_SERVER =  os.getenv("TABLEAU_SERVER")
-TABLEAU_SITE = os.getenv("TABLEAU_SITE")
+TABLEAU_SERVER_URL =  os.getenv("TABLEAU_SERVER")
+TABLEAU_SITE_NAME = os.getenv("TABLEAU_SITE")
 TABLEAU_PAT_NAME = os.getenv("TABLEAU_PAT_NAME")
 TABLEAU_PAT = os.getenv("TABLEAU_PAT")
-TABLEAU_AUTH = authenticate_tableau(TABLEAU_SERVER, TABLEAU_SITE, TABLEAU_PAT_NAME, TABLEAU_PAT)
+
+def restore_full_model_name(tables_json):
+    """
+    Adds aliases back to FQN tables found in a Tableau catalog database.
+    """
+    for tab in tables_json['tables']:
+        if tab["schema"].lower() == "common":
+            tab["name"] = f"common_{tab['name']}"
+        elif tab["schema"].lower() == 'core_ng':
+            tab["name"] = f"core_{tab['name']}"
+
+    return tables_json
 
 if __name__ == "__main__":
-    dbt_projects = dbt_get_projects(ACCOUNT_ID,API_BASE_URL,DBT_API_KEY)
-    # Need to specify dbt cloud PROD environment
-    jobs = dbt_get_jobs(ACCOUNT_ID,API_BASE_URL,DBT_API_KEY, job_environment_ids=[1939])
-    # Returns metadata on all models ran in 
+    # Initialize dbt API client
+    dbt_client = dbtClient(API_BASE_URL, DBT_API_KEY, METADATA_API_URL)
+    # Initialize Tableau API client
+    tableau_client = tableauClient(
+        TABLEAU_SERVER_URL,
+        TABLEAU_SITE_NAME,
+        TABLEAU_PAT_NAME,
+        TABLEAU_PAT
+    )
+    account_id = dbt_client.get_account_id()
+    # Need to specify dbt cloud PROD environment ID 1939
+    jobs = dbt_client.get_jobs(account_id, job_environment_ids=[1939])
+    # Returns metadata on all models ran in
     # common_run: https://cloud.getdbt.com/deploy/1708/projects/1499/jobs/117857
-    models = dbt_get_models_for_job(METADATA_API_URL, DBT_API_KEY, 117857)
+    models = dbt_client.get_models_for_job(117857)
     # The "PRODUCTION" database in the Tableau Catalog is the only one containing
     # tables associated to workbooks
-    tableau_databases = tableau_get_databases(TABLEAU_SERVER, TABLEAU_AUTH, ["PRODUCTION"])
+    tableau_creds = tableau_client.authenticate()
+    tableau_databases = tableau_client.get_databases(tableau_creds, ["PRODUCTION"])
     tableau_database_tables = restore_full_model_name(tableau_databases[1])
-    merged_tables = merge_dbt_tableau_tables(tableau_databases[1], tableau_database_tables, models)
+    merged_tables = tableau_client.merge_table_metadata(
+        tableau_databases[1],
+        tableau_database_tables,
+        models
+    )
     for table in merged_tables:
-        table_cols = get_tableau_columns(TABLEAU_SERVER, table, TABLEAU_AUTH)
-        publish_tableau_column_descriptions(TABLEAU_SERVER, table, table_cols, TABLEAU_AUTH)
-        publish_tableau_table_description(TABLEAU_SERVER, table, table['description'], TABLEAU_AUTH)
+        table_cols = tableau_client.get_column_metadata(table, tableau_creds)
+        tableau_client.publish_column_descriptions(table, table_cols, tableau_creds)
+        tableau_client.publish_table_description(
+            table, 
+            table["description"], 
+            tableau_creds
+        )
 
     # publish_tableau_table_description(TABLEAU_SERVER, merged_tables[10], merged_tables[10]['description'], TABLEAU_AUTH)
     #risk_rentals_cols = get_tableau_columns(TABLEAU_SERVER, merged_tables[43], TABLEAU_AUTH)
