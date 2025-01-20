@@ -14,7 +14,7 @@ from collections import defaultdict
 from operator import itemgetter
 import logging
 
-TABLEAU_API_VERSION='3.17'
+TABLEAU_API_VERSION="3.23"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -118,6 +118,7 @@ class tableauClient:
                     schema
                     id
                     luid
+                    fullName
                 }
             }
         }
@@ -161,13 +162,14 @@ class tableauClient:
 
     def merge_table_metadata(
         self,
-        tableau_database:list,
+        tableau_database: list,
         tableau_database_tables: list,
         dbt_models: list
         ) -> list:
         """
-        Combines the metatdata of dbt models retrieved from the dbt cloud API and the metadata
+        Combines the metadata of dbt models retrieved from the dbt cloud API and the metadata
         of all the Tableau tables within a specified Tableau Catalog database.
+        Preserves duplicate table entries from Tableau while merging with matching dbt model metadata.
         
         args:
             tableau_database: List of all tables within a Tableau Catalog 
@@ -175,23 +177,28 @@ class tableauClient:
             tableau_database_tables: List of tables in a Tableau Catalog database 
         
         Returns: a list of merged (i.e. matched database/schema/table name) 
-            Tableau database tables and dbt models
+            Tableau database tables and dbt models, preserving Tableau duplicates
         """
-        table_model_map = defaultdict(dict)
+        merged_tables = []
+        # Create a lookup dictionary for dbt models
+        dbt_model_map = {}
+        for model in dbt_models:
+            model_database = model["database"].lower()
+            model_schema = model["schema"].lower()
+            model_name = model["alias"].lower()
+            dbt_table_fqn = f"{model_database}.{model_schema}.{model_name}"
+            dbt_model_map[dbt_table_fqn] = model
+
+        # Iterate through Tableau tables and merge with matching dbt model
         for table in tableau_database_tables["tables"]:
-            table_database = tableau_database["name"].lower()
-            table_schema = table["schema"].lower()
-            table_name = table["name"].lower()
-            tableau_table_fqn = f"{table_database}.{table_schema}.{table_name}"
-            for model in dbt_models:
-                model_database = model["database"].lower()
-                model_schema = model["schema"].lower()
-                model_name = model["name"].lower()
-                dbt_table_fqn = f"{model_database}.{model_schema}.{model_name}"
-                if tableau_table_fqn == dbt_table_fqn:
-                    table_model_map[model["name"].lower()].update(table)
-                    table_model_map[table["name"].lower()].update(model)
-        merged_tables = sorted(table_model_map.values(), key=itemgetter("name"))
+            tableau_table_fqn = table["fullName"].lower()
+            if tableau_table_fqn in dbt_model_map:
+                # Create a new merged entry for each Tableau table
+                merged_entry = table.copy()  # Preserve the Tableau table data
+                merged_entry.update(dbt_model_map[tableau_table_fqn])  # Add the dbt model data
+                merged_tables.append(merged_entry)
+
+        merged_tables = sorted(merged_tables, key=itemgetter("name"))
 
         logger.info(
             "Merged %s dbt and Tableau tables in Tableau database: %s", 
@@ -491,6 +498,7 @@ class tableauClient:
         payload = f'<tsRequest><table description="{description_text}"></table></tsRequest>'
         headers = {
             "X-tableau-Auth": tableau_creds["token"],
+            "Accept": "application/xml",
             "Content-Type": "text/plain"
         }
 
