@@ -74,8 +74,7 @@ if __name__ == "__main__":
     # Need to specify dbt cloud PROD environment ID 1939
     # jobs = get_dbt_jobs(account_id)
     # Returns metadata on all models ran in
-    # common_run: https://cloud.getdbt.com/deploy/1708/projects/1499/jobs/117857
-    models = get_models_for_job(METADATA_API_URL, DBT_API_KEY, 117857)
+    models = get_models_for_job(METADATA_API_URL, DBT_API_KEY, )
 
     # The "PRODUCTION" database in the Tableau Catalog is the only one containing
     # tables associated to workbooks
@@ -87,24 +86,8 @@ if __name__ == "__main__":
         tableau_database_tables,
         models
     )
-    occupancies_pricing = merged_tables[210]
-    table_cols = tableau_client.get_column_metadata(occupancies_pricing, tableau_creds)
     # for table in merged_tables:
     #     table_cols = tableau_client.get_column_metadata(table, tableau_creds)
     #     tableau_client.publish_column_descriptions(table, table_cols, tableau_creds)
     #     tableau_client.publish_table_description(table, table["description"], tableau_creds)
-    # for i, table in enumerate(merged_tables):
-    #     if 'occupancies_pricing' in table["name"]:
-    #         print(i, table["fullName"], table["luid"], table["id"])
-    #risk_rentals_cols = get_tableau_columns(TABLEAU_SERVER, merged_tables[43], TABLEAU_AUTH)
-    # for col in risk_rentals_cols:
-    #     print(f"{col['name']} description: {col['luid']}")
-    #publish_tableau_column_tags(TABLEAU_SERVER, common_cars_cols, merged_tables[10], TABLEAU_AUTH)
-    verify_column_description(TABLEAU_SERVER_URL, '32ed54d3-34c0-4621-b167-1bcdd2c29933', 'c3c86eba-4da4-4e64-a8d8-cc81ac5f58b9', '7a1c20da-c707-4ef9-92b6-5447007d470d', tableau_creds['token'])
-    # # for i,model in enumerate(merged_tables):
-    #     print(f"Model {model.get('name')}, index: {i},")
-    # all_downstream_workbooks = []
-    # for table in merged_tables:
-    #     downstream_workbooks = tableau_get_downstream_workbooks(TABLEAU_SERVER, table, TABLEAU_AUTH)
-    #     all_downstream_workbooks.append(downstream_workbooks)
-    # generate_dbt_exposures(all_downstream_workbooks, TABLEAU_SERVER, TABLEAU_SITE, 1)
+
